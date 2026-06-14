@@ -28,7 +28,7 @@ export async function fetchCommentsPage(videoId, continuation = null) {
       comments.push(...extractThreadTimestampComments(item.commentThreadRenderer, commentsResponse));
     } else if (item.continuationItemRenderer) {
       followingToken =
-        item.continuationItemRenderer.continuationEndpoint.continuationCommand.token;
+        item.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token || null;
     }
   }
 
@@ -73,7 +73,7 @@ function extractThreadTimestampComments(thread, response) {
 function extractComment(thread, response) {
   if (thread.comment) {
     const renderer = thread.comment.commentRenderer;
-    const text = renderer.contentText.runs.map((run) => run.text).join("");
+    const text = renderer.contentText?.runs?.map((run) => run.text).join("") || "";
 
     return {
       id: renderer.commentId,
@@ -108,6 +108,10 @@ function extractComment(thread, response) {
 }
 
 function findTimestampContexts(text) {
+  if (!text) {
+    return [];
+  }
+
   const timestamps = [];
   TIMESTAMP_PATTERN.lastIndex = 0;
 
@@ -186,8 +190,16 @@ function parseVoteCount(value) {
 }
 
 function commentsContinuationToken(response) {
-  const body = Array.isArray(response) ? response.find((entry) => entry.response).response : response.response;
-  const commentSection = body.contents.twoColumnWatchNextResults.results.results.contents.find(
+  const body = Array.isArray(response)
+    ? response.find((entry) => entry?.response)?.response
+    : response?.response;
+  const contents = body?.contents?.twoColumnWatchNextResults?.results?.results?.contents;
+
+  if (!Array.isArray(contents)) {
+    return null;
+  }
+
+  const commentSection = contents.find(
     (entry) =>
       entry.itemSectionRenderer &&
       entry.itemSectionRenderer.sectionIdentifier === "comment-item-section",

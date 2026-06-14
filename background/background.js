@@ -36,6 +36,7 @@ async function handleIncrementalComments(videoId, tabId) {
       video_id: videoId,
       count: sentCount,
     });
+    return true;
   } catch (error) {
     console.error("CommentSync Title Row failed to fetch comments", error);
     await sendMessage(tabId, {
@@ -43,6 +44,7 @@ async function handleIncrementalComments(videoId, tabId) {
       video_id: videoId,
       message: error instanceof Error ? error.message : String(error),
     });
+    return false;
   }
 }
 
@@ -83,8 +85,13 @@ async function sendMessage(tabId, message) {
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "comments") {
+    if (!sender.tab?.id) {
+      sendResponse(false);
+      return false;
+    }
+
     handleIncrementalComments(message.video_id, sender.tab.id)
-      .then(() => sendResponse(true))
+      .then((accepted) => sendResponse(accepted))
       .catch((error) => {
         console.error("CommentSync Title Row failed to handle comments request", error);
         sendResponse(false);

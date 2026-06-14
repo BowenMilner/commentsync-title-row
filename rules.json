@@ -1,1 +1,14 @@
-[{"id":1,"priority":1,"action":{"type":"modifyHeaders","requestHeaders":[{"header":"origin","operation":"remove"}]},"condition":{"urlFilter":"www.youtube.com","resourceTypes":["xmlhttprequest"]}}]
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [{ "header": "origin", "operation": "remove" }]
+    },
+    "condition": {
+      "urlFilter": "www.youtube.com/youtubei/v1/next",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

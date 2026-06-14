@@ -17,6 +17,9 @@ The current source is version `1.0.26`.
 Important baseline behavior:
 
 - Uses centered, lifted pill placement.
+- Background comment fetching is the primary path; the in-page Innertube fetch is now a fallback only when the background request is rejected or reports an error. Do not reintroduce parallel duplicate fetches.
+- The declarative net request rule only strips `Origin` for `www.youtube.com/youtubei/v1/next`. Do not broaden it back to all YouTube XHRs unless there is a proven need.
+- YouTube response parsing should fail soft. Missing/changed private response fields should return no comments/token, not throw.
 - Removed the title-risk detection from `1.0.25` because it made the pill too low too often.
 - Keeps the queue/grouping improvements from `1.0.23`.
 - Keeps YouTube SPA navigation fixes from `1.0.22`.
@@ -30,10 +33,17 @@ The latest packaged file in the parent workspace is:
 Package from inside `title-row-commentsync` with:
 
 ```bash
-zip -r ../commentsync-title-row-VERSION.xpi . -x '.git/*' '.gitignore'
+zip -r -FS ../commentsync-title-row-VERSION.xpi . -x '.git/*' '.gitignore' 'AGENTS.md'
 ```
 
-Be careful: after the repo was initialized, a package accidentally included `.git/`. Always exclude `.git/*` and `.gitignore`, then verify with `unzip -l`.
+Be careful: after the repo was initialized, a package accidentally included `.git/`, and a later rebuild briefly included `AGENTS.md`. Always exclude `.git/*`, `.gitignore`, and `AGENTS.md`, then verify with `unzip -l`.
+
+The parent folder also has older extracted source folders and package files:
+
+- `commentsync-src` / `commentsync-1.0.3.xpi`
+- `youtube-timestamps-src` / `youtube-timestamps-1.0.1.xpi`
+
+These were cleaned so `web-ext lint` reports zero warnings, but they are not the active fork. Do not mix their code into `title-row-commentsync` unless intentionally porting a specific behavior.
 
 ## User Preferences
 
@@ -65,6 +75,20 @@ Avoid returning to the `1.0.18` style of runtime width/lift measurement. It brok
 - `background/background.js`: Background fetch coordinator, sends comments to content script.
 - `background/youtubei.js`: YouTube comment fetch/parser using Innertube endpoints.
 - `popup/popup.html` and `popup/popup.js`: Minimal enable/disable UI.
+- `rules.json`: Narrow header rule for the Innertube continuation endpoint only.
+
+## Fetching / Fallback Notes
+
+The active fork intentionally avoids doing the same private YouTube API pagination twice:
+
+- `content/content.js` asks the background script to fetch comments.
+- `background/background.js` responds immediately if it can accept the request, then streams comment updates back to the tab.
+- The in-page `fetchIncrementalComments` fallback runs only when the background request is rejected, cannot be sent, or the background script emits `comments_fetch_error`.
+- The normal DOM scan still runs after a short delay as a separate fallback for comments already rendered on the page.
+
+Keep this ordering. Duplicate background + in-page Innertube pagination can create unnecessary request bursts and make YouTube failures harder to debug.
+
+The parsing helpers in both `content/content.js` and `background/youtubei.js` use optional chaining around YouTube's private response shape. If YouTube changes a response, the extension should quietly produce no comments from that path and let the fallback paths continue.
 
 ## Detection Logic
 
@@ -133,6 +157,7 @@ Temporary add-ons and YouTube SPA navigation are easy to misread:
 - Open a fresh YouTube video tab after loading a new build.
 - Existing YouTube tabs can keep stale content scripts.
 - Firefox showing `Background script: Stopped` can be normal for MV3/event backgrounds.
+- Run `web-ext lint` on the source folder before packaging. It catches Firefox manifest issues and unsafe DOM patterns that plain JS syntax checks miss.
 
 Useful console logs in the YouTube page:
 
@@ -169,12 +194,22 @@ node --check content/content.js
 node --check background/background.js
 node --check background/youtubei.js
 python -m json.tool manifest.json
-zip -r ../commentsync-title-row-VERSION.xpi . -x '.git/*' '.gitignore'
+npx --yes web-ext lint -s .
+zip -r -FS ../commentsync-title-row-VERSION.xpi . -x '.git/*' '.gitignore' 'AGENTS.md'
 unzip -t ../commentsync-title-row-VERSION.xpi
 unzip -l ../commentsync-title-row-VERSION.xpi
 ```
 
-Check that the `.xpi` does not contain `.git/` or `.gitignore`.
+Check that the `.xpi` does not contain `.git/`, `.gitignore`, or `AGENTS.md`.
+
+For package-level verification, unpack the `.xpi` to `/tmp`, diff it against source while excluding repo-only files, and run `web-ext lint` on the unpacked copy:
+
+```bash
+mkdir -p /tmp/commentsync-title-row-check
+unzip -qo ../commentsync-title-row-VERSION.xpi -d /tmp/commentsync-title-row-check
+diff -qr . /tmp/commentsync-title-row-check -x .git -x .gitignore -x AGENTS.md
+npx --yes web-ext lint -s /tmp/commentsync-title-row-check
+```
 
 If source changes should be saved:
 
@@ -184,4 +219,3 @@ git add <files>
 git commit -m "<short message>"
 git push
 ```
-

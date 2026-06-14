@@ -12,6 +12,7 @@ let previousVideoTime = 0;
 let activeVideoId = null;
 let navigationTimer = null;
 let runId = 0;
+let fallbackFetchVideoId = null;
 
 const INNERTUBE_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const INNERTUBE_CLIENT_VERSION = "2.20211129.09.00";
@@ -52,21 +53,40 @@ async function main() {
   activeVideoId = videoId;
 
   createInterface();
-  browser.runtime
-    .sendMessage({ type: "comments", video_id: videoId })
-    .catch((error) =>
-      console.error("CommentSync Title Row failed to request background comments", error),
-    );
-  fetchIncrementalComments(videoId).catch((error) => {
-    if (currentRunId === runId) {
-      console.error("CommentSync Title Row failed to fetch fallback comments in-page", error);
-    }
-  });
+  requestBackgroundComments(videoId, currentRunId);
   setTimeout(() => {
     if (currentRunId === runId) {
       scanComments();
     }
   }, 5000);
+}
+
+async function requestBackgroundComments(videoId, currentRunId) {
+  try {
+    const accepted = await browser.runtime.sendMessage({ type: "comments", video_id: videoId });
+
+    if (!accepted && currentRunId === runId) {
+      runFallbackFetch(videoId, currentRunId);
+    }
+  } catch (error) {
+    if (currentRunId === runId) {
+      console.error("CommentSync Title Row failed to request background comments", error);
+      runFallbackFetch(videoId, currentRunId);
+    }
+  }
+}
+
+function runFallbackFetch(videoId, currentRunId) {
+  if (fallbackFetchVideoId === videoId) {
+    return;
+  }
+
+  fallbackFetchVideoId = videoId;
+  fetchIncrementalComments(videoId).catch((error) => {
+    if (currentRunId === runId) {
+      console.error("CommentSync Title Row failed to fetch fallback comments in-page", error);
+    }
+  });
 }
 
 function getVideoId() {
@@ -332,10 +352,12 @@ function scanComments() {
     return;
   }
 
+  const scannedComments = [];
+
   for (const thread of threads) {
     const commentText = thread.querySelector("#content-text");
     if (!commentText) {
-      return;
+      continue;
     }
 
     const rawText = commentText.innerText;
@@ -356,8 +378,12 @@ function scanComments() {
     timestamps.forEach((timestamp, index) => {
       const id = `${name}-${timestamp.time}-${index}`;
 
-      if (timestamp.time !== null && !comments.find((comment) => comment.id === id)) {
-        comments.push({
+      if (
+        timestamp.time !== null &&
+        !comments.some((comment) => comment.id === id) &&
+        !scannedComments.some((comment) => comment.id === id)
+      ) {
+        scannedComments.push({
           id,
           time: timestamp.time,
           timestamp: timestamp.value,
@@ -371,7 +397,7 @@ function scanComments() {
     });
   }
 
-  comments.sort((a, b) => a.time - b.time);
+  addComments(scannedComments);
 }
 
 async function fetchIncrementalComments(videoId) {
@@ -445,7 +471,7 @@ async function fetchCommentsPage(videoId, continuation = null) {
       );
     } else if (item.continuationItemRenderer) {
       followingToken =
-        item.continuationItemRenderer.continuationEndpoint.continuationCommand.token;
+        item.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token || null;
     }
   }
 
@@ -490,7 +516,7 @@ function extractThreadTimestampComments(thread, response) {
 function extractComment(thread, response) {
   if (thread.comment) {
     const renderer = thread.comment.commentRenderer;
-    const text = renderer.contentText.runs.map((run) => run.text).join("");
+    const text = renderer.contentText?.runs?.map((run) => run.text).join("") || "";
 
     return {
       id: renderer.commentId,
@@ -526,9 +552,15 @@ function extractComment(thread, response) {
 
 function commentsContinuationToken(response) {
   const body = Array.isArray(response)
-    ? response.find((entry) => entry.response).response
-    : response.response;
-  const commentSection = body.contents.twoColumnWatchNextResults.results.results.contents.find(
+    ? response.find((entry) => entry?.response)?.response
+    : response?.response;
+  const contents = body?.contents?.twoColumnWatchNextResults?.results?.results?.contents;
+
+  if (!Array.isArray(contents)) {
+    return null;
+  }
+
+  const commentSection = contents.find(
     (entry) =>
       entry.itemSectionRenderer &&
       entry.itemSectionRenderer.sectionIdentifier === "comment-item-section",
@@ -675,6 +707,10 @@ function getTimeInSeconds(value) {
 }
 
 function findTimestampContexts(text) {
+  if (!text) {
+    return [];
+  }
+
   const timestamps = [];
   timestampRegex.lastIndex = 0;
 
@@ -745,6 +781,7 @@ function resetVariables() {
   isDisplaying = false;
   comments = [];
   commentsQueue = [];
+  fallbackFetchVideoId = null;
   monitoredVideo?.removeEventListener("timeupdate", handleTimeUpdate);
   monitoredVideo?.removeEventListener("seeking", handleSeeking);
   monitoredVideo = null;
@@ -793,5 +830,6 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     console.error(`CommentSync Title Row comment fetch failed: ${message.message}`);
+    runFallbackFetch(message.video_id || activeVideoId, runId);
   }
 });
