@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CommentSync Title Row</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        color: #151515;
+        font-family: Arial, sans-serif;
+        user-select: none;
+        width: 300px;
+      }
+
+      header {
+        align-items: center;
+        display: flex;
+        justify-content: space-between;
+        padding: 22px 22px 14px;
+      }
+
+      .logo-box {
+        align-items: center;
+        display: flex;
+        gap: 10px;
+      }
+
+      .logo-box img {
+        height: 30px;
+        width: 30px;
+      }
+
+      h1 {
+        font-size: 15px;
+        line-height: 1.2;
+      }
+
+      #togglebtn {
+        cursor: pointer;
+        height: 20px;
+        position: relative;
+        width: 36px;
+      }
+
+      #togglebtn .bar {
+        background: #e7e7e7;
+        border: 1px solid #9b9b9b;
+        border-radius: 999px;
+        display: block;
+        height: 100%;
+        width: 100%;
+      }
+
+      #togglebtn .knob {
+        background: #777;
+        border-radius: 50%;
+        height: 14px;
+        left: 3px;
+        position: absolute;
+        top: 3px;
+        transition: all 0.14s ease;
+        width: 14px;
+      }
+
+      #togglebtn.toggle_active .bar {
+        background: #0b57d0;
+        border-color: #0b57d0;
+      }
+
+      #togglebtn.toggle_active .knob {
+        background: #fff;
+        transform: translateX(16px);
+      }
+
+      main {
+        padding: 0 22px 22px;
+      }
+
+      .preview {
+        border: 1px solid #d9d9d9;
+        border-radius: 8px;
+        overflow: hidden;
+      }
+
+      .preview-video {
+        background: linear-gradient(135deg, #232323, #111);
+        height: 78px;
+      }
+
+      .preview-meta {
+        padding: 12px;
+      }
+
+      .preview-title {
+        background: #1f1f1f;
+        border-radius: 999px;
+        height: 10px;
+        margin-bottom: 12px;
+        width: 78%;
+      }
+
+      .preview-row {
+        align-items: center;
+        display: grid;
+        gap: 8px;
+        grid-template-columns: 44px 1fr 44px;
+      }
+
+      .preview-owner,
+      .preview-actions {
+        background: #d9d9d9;
+        border-radius: 999px;
+        height: 18px;
+      }
+
+      .preview-chip {
+        align-items: center;
+        background: #171717;
+        border-radius: 999px;
+        display: flex;
+        gap: 8px;
+        min-width: 0;
+        padding: 6px 9px;
+      }
+
+      .preview-avatar {
+        background: #5e87ff;
+        border-radius: 50%;
+        flex: 0 0 auto;
+        height: 18px;
+        width: 18px;
+      }
+
+      .preview-text {
+        background: #f2f2f2;
+        border-radius: 999px;
+        height: 8px;
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="logo-box">
+        <img src="../images/favicon.png" alt="">
+        <h1>CommentSync<br>Title Row</h1>
+      </div>
+      <div id="togglebtn" role="switch" aria-label="Enable timestamped comments" aria-checked="false">
+        <span class="bar"></span>
+        <span class="knob"></span>
+      </div>
+    </header>
+    <main>
+      <div class="preview" aria-hidden="true">
+        <div class="preview-video"></div>
+        <div class="preview-meta">
+          <div class="preview-title"></div>
+          <div class="preview-row">
+            <div class="preview-owner"></div>
+            <div class="preview-chip">
+              <div class="preview-avatar"></div>
+              <div class="preview-text"></div>
+            </div>
+            <div class="preview-actions"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+    <script src="./popup.js"></script>
+  </body>
+</html>

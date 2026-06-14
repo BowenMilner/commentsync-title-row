@@ -1,0 +1,101 @@
+#commentsync-title-row-slot {
+  align-items: center;
+  display: flex;
+  flex: 1 1 360px;
+  justify-content: center;
+  min-width: 220px;
+  padding: 0 16px;
+  pointer-events: none;
+  transform: translateY(-8px);
+}
+
+#commentsync-title-row-slot.commentsync-title-risk {
+  transform: none;
+}
+
+#commentsync-title-row-comment {
+  align-items: center;
+  background: rgb(20 20 20 / 0.86);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 50px;
+  box-shadow: 0 8px 32px rgb(0 0 0 / 0.35);
+  box-sizing: border-box;
+  color: #fff;
+  display: flex;
+  gap: 12px;
+  max-width: min(820px, 100%);
+  min-height: 52px;
+  opacity: 0;
+  padding: 10px 18px 10px 12px;
+  transform: translateY(4px) scale(0.98);
+  transition:
+    opacity 0.45s cubic-bezier(0.175, 0.885, 0.32, 1.275),
+    transform 0.45s cubic-bezier(0.175, 0.885, 0.32, 1.275),
+    filter 0.45s ease;
+  width: max-content;
+}
+
+#commentsync-title-row-comment.commentsync-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition-delay: 0s;
+}
+
+#commentsync-title-row-comment.commentsync-hiding {
+  filter: blur(3px);
+  opacity: 0;
+  transform: translateY(4px) scale(0.98);
+}
+
+.commentsync-avatar {
+  border-radius: 50%;
+  flex: 0 0 auto;
+  height: 36px;
+  object-fit: cover;
+  width: 36px;
+}
+
+.commentsync-content {
+  min-width: 0;
+}
+
+.commentsync-text {
+  display: -webkit-box;
+  font-family: Roboto, Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  max-width: calc(min(820px, 100vw - 420px) - 84px);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.commentsync-text strong {
+  font-weight: 700;
+}
+
+@media (max-width: 940px) {
+  ytd-watch-metadata #top-row {
+    flex-wrap: wrap;
+  }
+
+  #commentsync-title-row-slot {
+    flex-basis: 100%;
+    justify-content: flex-start;
+    order: 3;
+    padding: 10px 0 0;
+    transform: none;
+  }
+
+  #commentsync-title-row-comment {
+    max-width: min(920px, 100%);
+  }
+
+  .commentsync-text {
+    max-width: none;
+    -webkit-line-clamp: 2;
+  }
+}
