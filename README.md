@@ -9,7 +9,7 @@ A local fork of CommentSync that shows timestamped YouTube comments in the metad
 3. Select `manifest.json` from this folder.
 4. Open a YouTube video with timestamped comments.
 
-The packaged file `commentsync-title-row-1.0.25.xpi` can also be loaded temporarily from the same Firefox debugging page.
+The packaged file `commentsync-title-row-1.0.26.xpi` can also be loaded temporarily from the same Firefox debugging page.
 
 ## Notes
 

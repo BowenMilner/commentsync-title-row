@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "CommentSync Title Row",
   "description": "Show timestamped YouTube comments in the title/action row while the video plays.",
-  "version": "1.0.25",
+  "version": "1.0.26",
   "permissions": [
     "storage",
     "declarativeNetRequestWithHostAccess",

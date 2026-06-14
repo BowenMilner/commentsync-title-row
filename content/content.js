@@ -136,26 +136,6 @@ function ensureSlot() {
   if (overlayElement.parentElement !== slotElement) {
     slotElement.appendChild(overlayElement);
   }
-
-  updateTitleRisk();
-}
-
-function updateTitleRisk() {
-  if (!slotElement) {
-    return;
-  }
-
-  const title = document.querySelector("ytd-watch-metadata h1");
-  if (!title) {
-    slotElement.classList.remove("commentsync-title-risk");
-    return;
-  }
-
-  const titleRect = title.getBoundingClientRect();
-  const slotRect = slotElement.getBoundingClientRect();
-  const titleReachesPillZone = titleRect.right > slotRect.left - 24;
-
-  slotElement.classList.toggle("commentsync-title-risk", titleReachesPillZone);
 }
 
 function removeInterface() {
