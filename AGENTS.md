@@ -2,7 +2,7 @@
 
 ## What This Project Is
 
-This is a Firefox WebExtension fork/adaptation of CommentSync. The goal is to show timestamped YouTube comments in the space between the channel/remix area and the like/share/action buttons, instead of as a corner overlay on top of the video.
+This is a cross-browser Firefox/Chromium WebExtension fork of CommentSync. The goal is to show timestamped YouTube comments in the space between the channel/remix area and the like/share/action buttons, instead of as a corner overlay on top of the video.
 
 Current GitHub repo:
 
@@ -12,12 +12,15 @@ The user cares most about the actual viewing feel on YouTube. Small visual regre
 
 ## Current Baseline
 
-The current source is version `1.0.26`.
+The current source is version `1.0.31`.
 
 Important baseline behavior:
 
 - Uses centered, lifted pill placement.
 - Background comment fetching is the primary path; the in-page Innertube fetch is now a fallback only when the background request is rejected or reports an error. Do not reintroduce parallel duplicate fetches.
+- The popup's off state cancels background/fallback work and prevents new network or DOM scanning until re-enabled.
+- `shared/core.js` is the sole implementation of timestamp parsing, YouTube response extraction, localized vote parsing, queue grouping, and resilient JSON requests. Do not duplicate these helpers back into content or background code.
+- The tracked manifest targets Firefox; `npm run build` generates both Firefox and Chrome manifests and packages without rewriting tracked source.
 - The declarative net request rule only strips `Origin` for `www.youtube.com/youtubei/v1/next`. Do not broaden it back to all YouTube XHRs unless there is a proven need.
 - YouTube response parsing should fail soft. Missing/changed private response fields should return no comments/token, not throw.
 - Removed the title-risk detection from `1.0.25` because it made the pill too low too often.
@@ -26,17 +29,13 @@ Important baseline behavior:
 - Keeps defensive rendering logs/guards from `1.0.21`.
 - Keeps timestamp-list segmenting, so a comment with many timestamps shows only the relevant timestamp segment instead of the whole huge comment.
 
-The latest packaged file in the parent workspace is:
-
-- `/home/bowen/Documents/youtube comment popup/commentsync-title-row-1.0.26.xpi`
-
-Package from inside `title-row-commentsync` with:
+Build from the project root with:
 
 ```bash
-zip -r -FS ../commentsync-title-row-VERSION.xpi . -x '.git/*' '.gitignore' 'AGENTS.md'
+npm run check
 ```
 
-Be careful: after the repo was initialized, a package accidentally included `.git/`, and a later rebuild briefly included `AGENTS.md`. Always exclude `.git/*`, `.gitignore`, and `AGENTS.md`, then verify with `unzip -l`.
+The generated unpacked builds and archives are under `web-ext-artifacts/`. The build script copies an explicit runtime allowlist so `.git/`, `.gitignore`, `AGENTS.md`, tests, and other repository-only files cannot enter a package.
 
 The parent folder also has older extracted source folders and package files:
 
@@ -63,7 +62,9 @@ These were cleaned so `web-ext lint` reports zero warnings, but they are not the
 - `1.0.23`: Best behavior baseline for UX before later layout experiments. Added comment grouping, top-liked filtering, stale dropping, and dynamic display durations.
 - `1.0.24`: Removed upward lift globally to avoid title overlap. User found the pill too low too often.
 - `1.0.25`: Tried title-risk detection based on title right edge reaching into the pill zone. User disliked this because it lowered the pill too often.
-- `1.0.26`: Removed title-risk detection and restored centered lifted behavior, keeping queue improvements. This is the currently pushed state.
+- `1.0.26`: Removed title-risk detection and restored centered lifted behavior, keeping queue improvements.
+- `1.0.30`: Local Chromium hardening that added fetch cancellation, modern YouTube parsing, and browser API compatibility; it was recovered from the Atlas-loaded Downloads folder.
+- `1.0.31`: Reconciles `1.0.30` into Git, centralizes shared logic, reduces permissions and frame injection, makes off cancel work, improves request failures and accessibility, and adds automated tests plus Chrome/Firefox builds.
 
 Avoid returning to the `1.0.18` style of runtime width/lift measurement. It broke visible display and was hard to reason about.
 
@@ -73,8 +74,10 @@ Avoid returning to the `1.0.18` style of runtime width/lift measurement. It brok
 - `content/content.js`: Main UI, YouTube navigation handling, comment queueing, rendering, in-page fallback fetch.
 - `content/content.css`: Pill placement, sizing, animation.
 - `background/background.js`: Background fetch coordinator, sends comments to content script.
-- `background/youtubei.js`: YouTube comment fetch/parser using Innertube endpoints.
+- `shared/core.js`: Shared YouTube request/parser, timestamp, chapter, vote, and queue helpers.
 - `popup/popup.html` and `popup/popup.js`: Minimal enable/disable UI.
+- `scripts/build.mjs`: Reproducible allowlist-based Chrome and Firefox build pipeline.
+- `tests/`: Node tests for core parsing, queueing, network retry, manifest permissions, and immediate background acceptance.
 - `rules.json`: Narrow header rule for the Innertube continuation endpoint only.
 
 ## Fetching / Fallback Notes
@@ -88,7 +91,7 @@ The active fork intentionally avoids doing the same private YouTube API paginati
 
 Keep this ordering. Duplicate background + in-page Innertube pagination can create unnecessary request bursts and make YouTube failures harder to debug.
 
-The parsing helpers in both `content/content.js` and `background/youtubei.js` use optional chaining around YouTube's private response shape. If YouTube changes a response, the extension should quietly produce no comments from that path and let the fallback paths continue.
+The parsing helpers in `shared/core.js` use optional chaining around YouTube's private response shape. If YouTube changes a response, the extension should quietly produce no comments/token or a structured fetch error so the fallback path can continue.
 
 ## Detection Logic
 
@@ -171,44 +174,42 @@ If comments do not appear, first check whether comments are loaded, queued, or f
 
 ## Git / Publishing
 
-Local repo:
+Mac local repo:
 
-- `/home/bowen/Documents/youtube comment popup/title-row-commentsync`
+- `/path/to/commentsync-title-row`
+
+The Arch checkout may use a different path; resolve it with `git rev-parse --show-toplevel` rather than assuming the old parent workspace.
 
 Remote:
 
 - `origin https://github.com/BowenMilner/commentsync-title-row.git`
 
-Current pushed commit after `1.0.26`:
+Current remote baseline before the local `1.0.31` reconciliation:
 
-- `fb34973 Center lifted title row pill`
+- `a52cf61 Fix comment fetch fallback lifecycle`
 
 The parent folder contains many old `.xpi` files and unpacked add-on folders. Do not publish from the parent folder. Work from `title-row-commentsync`.
 
 ## Validation Checklist
 
-Before handing a build to the user:
+Before handing a build to the user, run the full local check:
 
 ```bash
-node --check content/content.js
-node --check background/background.js
-node --check background/youtubei.js
-python -m json.tool manifest.json
-npx --yes web-ext lint -s .
-zip -r -FS ../commentsync-title-row-VERSION.xpi . -x '.git/*' '.gitignore' 'AGENTS.md'
-unzip -t ../commentsync-title-row-VERSION.xpi
-unzip -l ../commentsync-title-row-VERSION.xpi
+npm run check
+unzip -t web-ext-artifacts/commentsync-title-row-VERSION-firefox.xpi
+unzip -t web-ext-artifacts/commentsync-title-row-VERSION-chrome.zip
+unzip -l web-ext-artifacts/commentsync-title-row-VERSION-firefox.xpi
+unzip -l web-ext-artifacts/commentsync-title-row-VERSION-chrome.zip
 ```
 
-Check that the `.xpi` does not contain `.git/`, `.gitignore`, or `AGENTS.md`.
+Check that neither archive contains `.git/`, `.gitignore`, `AGENTS.md`, tests, scripts, or package metadata.
 
 For package-level verification, unpack the `.xpi` to `/tmp`, diff it against source while excluding repo-only files, and run `web-ext lint` on the unpacked copy:
 
 ```bash
 mkdir -p /tmp/commentsync-title-row-check
-unzip -qo ../commentsync-title-row-VERSION.xpi -d /tmp/commentsync-title-row-check
-diff -qr . /tmp/commentsync-title-row-check -x .git -x .gitignore -x AGENTS.md
-npx --yes web-ext lint -s /tmp/commentsync-title-row-check
+unzip -qo web-ext-artifacts/commentsync-title-row-VERSION-firefox.xpi -d /tmp/commentsync-title-row-check
+diff -qr web-ext-artifacts/firefox-VERSION /tmp/commentsync-title-row-check
 ```
 
 If source changes should be saved:

@@ -1,0 +1,11 @@
+{
+  "name": "commentsync-title-row",
+  "private": true,
+  "version": "1.0.31",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test",
+    "check": "node --check shared/core.js && node --check background/background.js && node --check content/content.js && node --check popup/popup.js && node --test && node scripts/build.mjs"
+  }
+}

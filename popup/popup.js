@@ -1,8 +1,11 @@
+const extensionApi = globalThis.browser || globalThis.chrome;
+const usingBrowserPromiseApi = Boolean(globalThis.browser);
+
 async function getActiveState() {
-  const state = await browser.storage.sync.get("active");
+  const state = await getSyncStorage("active");
 
   if (state?.active === undefined || state?.active === null) {
-    await browser.storage.sync.set({ active: true });
+    await setSyncStorage({ active: true });
     return true;
   }
 
@@ -16,15 +19,66 @@ function setToggleState(toggle, isActive) {
 
 document.addEventListener("DOMContentLoaded", async () => {
   const toggle = document.getElementById("togglebtn");
-  const isActive = await getActiveState();
+  let isActive = true;
+
+  try {
+    isActive = await getActiveState();
+  } catch (error) {
+    console.error("CommentSync Title Row failed to read the active state", error);
+  }
 
   setToggleState(toggle, isActive);
 
   toggle.addEventListener("click", async () => {
+    const previousState = toggle.classList.contains("toggle_active");
     const nextState = !toggle.classList.contains("toggle_active");
-
     setToggleState(toggle, nextState);
-    await browser.storage.sync.set({ active: nextState });
-    await browser.runtime.sendMessage({ type: "isActive", status: nextState });
+    toggle.disabled = true;
+
+    try {
+      await setSyncStorage({ active: nextState });
+    } catch (error) {
+      console.error("CommentSync Title Row failed to save the active state", error);
+      setToggleState(toggle, previousState);
+    } finally {
+      toggle.disabled = false;
+      toggle.focus();
+    }
   });
 });
+
+function getSyncStorage(keys) {
+  if (usingBrowserPromiseApi) {
+    return extensionApi.storage.sync.get(keys);
+  }
+
+  return new Promise((resolve, reject) => {
+    extensionApi.storage.sync.get(keys, (items) => {
+      const error = extensionApi.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve(items);
+    });
+  });
+}
+
+function setSyncStorage(items) {
+  if (usingBrowserPromiseApi) {
+    return extensionApi.storage.sync.set(items);
+  }
+
+  return new Promise((resolve, reject) => {
+    extensionApi.storage.sync.set(items, () => {
+      const error = extensionApi.runtime.lastError;
+
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+
+      resolve();
+    });
+  });
+}

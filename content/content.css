@@ -95,3 +95,27 @@
     -webkit-line-clamp: 2;
   }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  #commentsync-title-row-comment {
+    transition: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #commentsync-title-row-comment {
+    transition:
+      opacity 0.15s ease,
+      filter 0.15s ease;
+  }
+
+  #commentsync-title-row-comment,
+  #commentsync-title-row-comment.commentsync-visible,
+  #commentsync-title-row-comment.commentsync-hiding {
+    transform: none;
+  }
+
+  #commentsync-title-row-comment.commentsync-hiding {
+    filter: none;
+  }
+}

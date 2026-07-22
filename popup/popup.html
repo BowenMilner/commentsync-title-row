@@ -42,10 +42,24 @@
       }
 
       #togglebtn {
+        appearance: none;
+        background: transparent;
+        border: 0;
         cursor: pointer;
         height: 20px;
+        padding: 0;
         position: relative;
         width: 36px;
+      }
+
+      #togglebtn:focus-visible {
+        outline: 3px solid #0b57d0;
+        outline-offset: 3px;
+      }
+
+      #togglebtn:disabled {
+        cursor: progress;
+        opacity: 0.65;
       }
 
       #togglebtn .bar {
@@ -143,6 +157,18 @@
         height: 8px;
         width: 100%;
       }
+
+      @media (prefers-reduced-motion: reduce) {
+        #togglebtn .knob {
+          transition: none;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #togglebtn .knob {
+          transition: none;
+        }
+      }
     </style>
   </head>
   <body>
@@ -151,10 +177,10 @@
         <img src="../images/favicon.png" alt="">
         <h1>CommentSync<br>Title Row</h1>
       </div>
-      <div id="togglebtn" role="switch" aria-label="Enable timestamped comments" aria-checked="false">
+      <button id="togglebtn" type="button" role="switch" aria-label="Enable timestamped comments" aria-checked="false">
         <span class="bar"></span>
         <span class="knob"></span>
-      </div>
+      </button>
     </header>
     <main>
       <div class="preview" aria-hidden="true">

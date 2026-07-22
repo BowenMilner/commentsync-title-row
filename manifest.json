@@ -2,11 +2,10 @@
   "manifest_version": 3,
   "name": "CommentSync Title Row",
   "description": "Show timestamped YouTube comments in the title/action row while the video plays.",
-  "version": "1.0.27",
+  "version": "1.0.31",
   "permissions": [
     "storage",
-    "declarativeNetRequestWithHostAccess",
-    "tabs"
+    "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
     "https://*.youtube.com/"
@@ -35,8 +34,10 @@
     ]
   },
   "icons": {
+    "16": "icons/16x16.png",
     "48": "icons/48x48.png",
-    "96": "icons/96x96.png"
+    "96": "icons/96x96.png",
+    "128": "icons/128x128.png"
   },
   "background": {
     "scripts": [
@@ -49,8 +50,9 @@
       "matches": [
         "https://*.youtube.com/*"
       ],
-      "all_frames": true,
+      "all_frames": false,
       "js": [
+        "shared/core.js",
         "content/content.js"
       ],
       "css": [

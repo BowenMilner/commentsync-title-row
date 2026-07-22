@@ -1,27 +1,87 @@
-import * as youtubei from "./youtubei.js";
+import "../shared/core.js";
 
-async function handleIncrementalComments(videoId, tabId) {
+const extensionApi = globalThis.browser || globalThis.chrome;
+const usingBrowserPromiseApi = Boolean(globalThis.browser);
+const core = globalThis.CommentSyncCore;
+const activeFetchesByTab = new Map();
+
+function fetchKeyForTab(tabId) {
+  return String(tabId);
+}
+
+function cancelFetch(tabId) {
+  const key = fetchKeyForTab(tabId);
+  activeFetchesByTab.get(key)?.abortController.abort();
+  activeFetchesByTab.delete(key);
+}
+
+function startIncrementalComments(videoId, tabId) {
+  const fetchKey = fetchKeyForTab(tabId);
+  const existingFetch = activeFetchesByTab.get(fetchKey);
+  if (existingFetch?.videoId === videoId) {
+    return true;
+  }
+
+  existingFetch?.abortController.abort();
+  const abortController = new AbortController();
+  activeFetchesByTab.set(fetchKey, { videoId, abortController });
+
+  handleIncrementalComments(videoId, tabId, abortController)
+    .catch((error) => {
+      if (!abortController.signal.aborted && error?.name !== "AbortError") {
+        console.error("CommentSync Title Row failed to handle comments request", error);
+      }
+    })
+    .finally(() => {
+      if (activeFetchesByTab.get(fetchKey)?.abortController === abortController) {
+        activeFetchesByTab.delete(fetchKey);
+      }
+    });
+
+  return true;
+}
+
+async function handleIncrementalComments(videoId, tabId, abortController) {
   let nextToken = null;
   let pageCount = 0;
-  let collectedComments = [];
   let sentCount = 0;
+  const seenCommentIds = new Set();
 
   try {
-    while (pageCount < 10) {
-      const { comments, nextToken: fetchedNextToken } = await youtubei.fetchCommentsPage(
+    while (pageCount < 10 && !abortController.signal.aborted) {
+      const stats = { threads: 0, timestamped: 0, chapterSkipped: 0, missingMetadata: 0 };
+      const { comments, nextToken: fetchedNextToken } = await core.fetchCommentsPage(
         videoId,
         nextToken,
+        abortController.signal,
+        stats,
       );
 
-      if (comments.length > 0) {
-        const filtered = dedupeComments(collectedComments, comments);
-        collectedComments = filtered.all;
-        sentCount += filtered.newlyAdded.length;
-        await sendMessage(tabId, {
+      const newlyAdded = comments.filter((comment) => {
+        if (seenCommentIds.has(comment.id)) {
+          return false;
+        }
+        seenCommentIds.add(comment.id);
+        return true;
+      });
+
+      if (stats.timestamped > 0 || newlyAdded.length > 0) {
+        console.info(
+          `CommentSync Title Row fetched page: ${newlyAdded.length} accepted from ${stats.timestamped} timestamp(s), ${stats.chapterSkipped} chapter list(s), ${stats.missingMetadata} missing metadata, ${stats.threads} thread(s) scanned`,
+        );
+      }
+
+      if (newlyAdded.length > 0) {
+        const delivered = await sendMessage(tabId, {
           type: "comments_update",
           video_id: videoId,
-          comments: filtered.newlyAdded,
+          comments: newlyAdded,
         });
+        if (!delivered) {
+          cancelFetch(tabId);
+          return;
+        }
+        sentCount += newlyAdded.length;
       }
 
       if (!fetchedNextToken) {
@@ -31,83 +91,73 @@ async function handleIncrementalComments(videoId, tabId) {
       nextToken = fetchedNextToken;
       pageCount += 1;
     }
-    await sendMessage(tabId, {
-      type: "comments_fetch_complete",
-      video_id: videoId,
-      count: sentCount,
-    });
-    return true;
+
+    if (!abortController.signal.aborted) {
+      await sendMessage(tabId, {
+        type: "comments_fetch_complete",
+        video_id: videoId,
+        count: sentCount,
+      });
+    }
   } catch (error) {
+    if (abortController.signal.aborted || error?.name === "AbortError") {
+      return;
+    }
+
     console.error("CommentSync Title Row failed to fetch comments", error);
     await sendMessage(tabId, {
       type: "comments_fetch_error",
       video_id: videoId,
       message: error instanceof Error ? error.message : String(error),
     });
-    return false;
   }
-}
-
-function dedupeComments(existingComments, incomingComments) {
-  const newlyAdded = [];
-  const all = [...existingComments];
-
-  incomingComments.forEach((incomingComment) => {
-    if (!all.some((comment) => comment.id === incomingComment.id)) {
-      all.push(incomingComment);
-      newlyAdded.push(incomingComment);
-    }
-  });
-
-  return { all, newlyAdded };
-}
-
-async function sendNewOverlayStatus(status) {
-  const tabs = (await browser.tabs.query({})).filter((tab) =>
-    tab.url.startsWith("https://www.youtube.com/watch?v="),
-  );
-
-  if (!tabs) {
-    return;
-  }
-
-  const message = { type: "isActive", status };
-  tabs.forEach(async (tab) => await sendMessage(tab.id, message));
 }
 
 async function sendMessage(tabId, message) {
   try {
-    await browser.tabs.sendMessage(tabId, message);
+    await sendTabMessage(tabId, message);
+    return true;
   } catch (error) {
     console.error("CommentSync Title Row failed to send a tab message", error);
+    return false;
   }
 }
 
-browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === "comments") {
-    if (!sender.tab?.id) {
-      sendResponse(false);
-      return false;
-    }
-
-    handleIncrementalComments(message.video_id, sender.tab.id)
-      .then((accepted) => sendResponse(accepted))
-      .catch((error) => {
-        console.error("CommentSync Title Row failed to handle comments request", error);
-        sendResponse(false);
-      });
-    return true;
+function sendTabMessage(tabId, message) {
+  if (usingBrowserPromiseApi) {
+    return extensionApi.tabs.sendMessage(tabId, message);
   }
 
-  if (message.type === "isActive") {
-    sendNewOverlayStatus(message.status)
-      .then(() => sendResponse(true))
-      .catch((error) => {
-        console.error("CommentSync Title Row failed to handle active-status request", error);
-        sendResponse(false);
-      });
-    return true;
+  return new Promise((resolve, reject) => {
+    extensionApi.tabs.sendMessage(tabId, message, (response) => {
+      const error = extensionApi.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve(response);
+    });
+  });
+}
+
+extensionApi.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const tabId = sender.tab?.id;
+  if (message.type === "comments") {
+    const accepted =
+      Boolean(tabId && message.video_id) && startIncrementalComments(message.video_id, tabId);
+    sendResponse(accepted);
+    return false;
+  }
+
+  if (message.type === "cancel_comments") {
+    if (tabId) {
+      cancelFetch(tabId);
+    }
+    sendResponse(true);
+    return false;
   }
 
   return false;
 });
+
+extensionApi.tabs.onRemoved.addListener((tabId) => cancelFetch(tabId));

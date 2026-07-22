@@ -13,10 +13,16 @@ let activeVideoId = null;
 let navigationTimer = null;
 let runId = 0;
 let fallbackFetchVideoId = null;
+let fallbackAbortController = null;
+let monitorRetryTimer = null;
+let queueRetryTimer = null;
+let scanRetryTimer = null;
+let locationPollTimer = null;
+let lastKnownUrl = location.href;
 
-const INNERTUBE_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
-const INNERTUBE_CLIENT_VERSION = "2.20211129.09.00";
-const timestampRegex = /(?<!\d)(?:(\d{1,3}):)?(\d{1,3}):([0-5]\d)(?!\d)/g;
+const extensionApi = globalThis.browser || globalThis.chrome;
+const usingBrowserPromiseApi = Boolean(globalThis.browser);
+const core = globalThis.CommentSyncCore;
 const SLOT_ID = "commentsync-title-row-slot";
 const OVERLAY_ID = "commentsync-title-row-comment";
 const COMMENT_TRIGGER_WINDOW_SECONDS = 6;
@@ -25,17 +31,17 @@ const MAX_COMMENTS_PER_GROUP = 3;
 const MAX_QUEUE_LATENESS_SECONDS = 8;
 const MAX_GROUP_DISPLAY_MS = 9000;
 const BETWEEN_COMMENT_DELAY_MS = 500;
+const DOM_SCAN_RETRY_COUNT = 6;
+const DOM_SCAN_RETRY_DELAY_MS = 1500;
 
-function locationChange(callback) {
-  let currentUrl = location.href;
-  const observer = new MutationObserver(() => {
-    if (currentUrl !== document.location.href) {
-      currentUrl = document.location.href;
+function watchLocation(callback) {
+  clearInterval(locationPollTimer);
+  locationPollTimer = setInterval(() => {
+    if (lastKnownUrl !== location.href) {
+      lastKnownUrl = location.href;
       callback();
     }
-  });
-
-  observer.observe(document.body, { childList: true, subtree: true });
+  }, 1000);
 }
 
 async function main() {
@@ -43,10 +49,22 @@ async function main() {
   resetVariables();
   isActive = await isActiveFunc();
 
+  if (currentRunId !== runId) {
+    return;
+  }
+
+  if (!isActive) {
+    activeVideoId = null;
+    removeInterface();
+    sendRuntimeMessage({ type: "cancel_comments" }).catch(() => {});
+    return;
+  }
+
   const videoId = getVideoId();
   if (!videoId) {
     activeVideoId = null;
     removeInterface();
+    sendRuntimeMessage({ type: "cancel_comments" }).catch(() => {});
     return;
   }
 
@@ -54,16 +72,12 @@ async function main() {
 
   createInterface();
   requestBackgroundComments(videoId, currentRunId);
-  setTimeout(() => {
-    if (currentRunId === runId) {
-      scanComments();
-    }
-  }, 5000);
+  scheduleCommentScan(currentRunId);
 }
 
 async function requestBackgroundComments(videoId, currentRunId) {
   try {
-    const accepted = await browser.runtime.sendMessage({ type: "comments", video_id: videoId });
+    const accepted = await sendRuntimeMessage({ type: "comments", video_id: videoId });
 
     if (!accepted && currentRunId === runId) {
       runFallbackFetch(videoId, currentRunId);
@@ -77,13 +91,16 @@ async function requestBackgroundComments(videoId, currentRunId) {
 }
 
 function runFallbackFetch(videoId, currentRunId) {
-  if (fallbackFetchVideoId === videoId) {
+  if (!videoId || currentRunId !== runId || fallbackFetchVideoId === videoId) {
     return;
   }
 
+  fallbackAbortController?.abort();
+  fallbackAbortController = new AbortController();
   fallbackFetchVideoId = videoId;
-  fetchIncrementalComments(videoId).catch((error) => {
-    if (currentRunId === runId) {
+
+  fetchIncrementalComments(videoId, currentRunId, fallbackAbortController.signal).catch((error) => {
+    if (currentRunId === runId && error?.name !== "AbortError") {
       console.error("CommentSync Title Row failed to fetch fallback comments in-page", error);
     }
   });
@@ -133,6 +150,14 @@ function createInterface() {
 }
 
 function ensureSlot() {
+  if (
+    slotElement?.isConnected &&
+    overlayElement?.isConnected &&
+    overlayElement.parentElement === slotElement
+  ) {
+    return;
+  }
+
   const topRow = document.querySelector("ytd-watch-metadata #top-row");
   const actions = document.querySelector("ytd-watch-metadata #actions");
   const fallback = document.querySelector("ytd-watch-metadata #above-the-fold");
@@ -168,11 +193,16 @@ function removeInterface() {
   slotElement = null;
 }
 
-function startMonitoring() {
+function startMonitoring(currentRunId = runId) {
+  if (currentRunId !== runId) {
+    return;
+  }
+
   const video = document.querySelector("video.html5-main-video") || document.querySelector("video");
   videoContainer = document.querySelector("#container .html5-video-player");
   if (!video) {
-    setTimeout(startMonitoring, 500);
+    clearTimeout(monitorRetryTimer);
+    monitorRetryTimer = setTimeout(() => startMonitoring(currentRunId), 500);
     return;
   }
 
@@ -234,17 +264,17 @@ function queueCurrentComments(currentTime) {
       `CommentSync Title Row queued ${selectedComments.length}/${matchingComments.length} comment(s) at ${Math.floor(currentTime)}s`,
     );
     commentsQueue.push(...selectedComments);
-    processQueue();
+    processQueue(runId);
   }
 }
 
-async function processQueue() {
-  if (isDisplaying || commentsQueue.length === 0 || isAdPlaying() || !isActive) {
+async function processQueue(currentRunId = runId) {
+  if (currentRunId !== runId || isDisplaying || commentsQueue.length === 0 || !isActive) {
     return;
   }
 
   if (isAdPlaying()) {
-    setTimeout(processQueue, 2000);
+    scheduleQueueRetry(currentRunId);
     return;
   }
 
@@ -258,43 +288,33 @@ async function processQueue() {
   if (!showOverlay(nextComment)) {
     isDisplaying = false;
     await delay(50);
-    processQueue();
+    processQueue(currentRunId);
     return;
   }
   await delay(getDisplayDuration(nextComment));
+  if (currentRunId !== runId) {
+    return;
+  }
   hideOverlay();
   isDisplaying = false;
   await delay(BETWEEN_COMMENT_DELAY_MS);
-  processQueue();
+  processQueue(currentRunId);
+}
+
+function scheduleQueueRetry(currentRunId) {
+  clearTimeout(queueRetryTimer);
+  queueRetryTimer = setTimeout(() => {
+    if (currentRunId === runId) {
+      processQueue(currentRunId);
+    }
+  }, 2000);
 }
 
 function selectQueueComments(matchingComments) {
-  const groups = [];
-
-  matchingComments
-    .slice()
-    .sort((a, b) => a.time - b.time || (b.likes || 0) - (a.likes || 0))
-    .forEach((comment) => {
-      let group = groups.find(
-        (candidate) => Math.abs(candidate.time - comment.time) <= COMMENT_GROUP_WINDOW_SECONDS,
-      );
-
-      if (!group) {
-        group = { time: comment.time, comments: [] };
-        groups.push(group);
-      }
-
-      group.comments.push(comment);
-    });
-
-  return groups.flatMap((group) =>
-    group.comments
-      .sort((a, b) => (b.likes || 0) - (a.likes || 0) || a.time - b.time)
-      .slice(0, MAX_COMMENTS_PER_GROUP)
-      .map((comment, index, selectedGroup) => ({
-        ...comment,
-        groupSize: selectedGroup.length,
-      })),
+  return core.selectQueueComments(
+    matchingComments,
+    COMMENT_GROUP_WINDOW_SECONDS,
+    MAX_COMMENTS_PER_GROUP,
   );
 }
 
@@ -345,14 +365,39 @@ function isAdPlaying() {
   return adIsPlaying;
 }
 
-function scanComments() {
+function scheduleCommentScan(currentRunId, attempt = 0) {
+  clearTimeout(scanRetryTimer);
+  scanRetryTimer = setTimeout(() => {
+    if (currentRunId !== runId) {
+      return;
+    }
+
+    const acceptedCount = scanComments(currentRunId);
+    if (acceptedCount === 0 && attempt < DOM_SCAN_RETRY_COUNT) {
+      scheduleCommentScan(currentRunId, attempt + 1);
+    }
+  }, attempt === 0 ? 5000 : DOM_SCAN_RETRY_DELAY_MS);
+}
+
+function scanComments(currentRunId = runId) {
+  if (currentRunId !== runId) {
+    return 0;
+  }
+
   const threads = document.querySelectorAll("ytd-comment-thread-renderer");
 
   if (threads.length === 0) {
-    return;
+    return 0;
   }
 
   const scannedComments = [];
+  const scanStats = {
+    threads: threads.length,
+    timestamped: 0,
+    chapterSkipped: 0,
+    missingMetadata: 0,
+    accepted: 0,
+  };
 
   for (const thread of threads) {
     const commentText = thread.querySelector("#content-text");
@@ -361,22 +406,35 @@ function scanComments() {
     }
 
     const rawText = commentText.innerText;
-    const timestamps = findTimestampContexts(rawText);
-    if (timestamps.length === 0 || isChaptersComment(timestamps)) {
+    const timestamps = core.findTimestampContexts(rawText);
+    if (timestamps.length === 0) {
+      continue;
+    }
+
+    scanStats.timestamped += timestamps.length;
+
+    if (core.isChaptersComment(rawText, timestamps)) {
+      scanStats.chapterSkipped += 1;
       continue;
     }
 
     const author = thread.querySelector("#author-text span");
     const avatar = thread.querySelector("#author-thumbnail #img");
-    const name = author ? author.innerText.trim() : null;
-    const avatarUrl = avatar ? avatar.src : "";
+    const name = author?.innerText.trim() || "YouTube commenter";
+    const avatarUrl = avatar?.src || "";
+    const sourceId =
+      thread.getAttribute("id") || core.fallbackCommentId(rawText, `${name}\u0000${avatarUrl}`);
+    const voteCount =
+      thread.querySelector("#vote-count-middle")?.textContent ||
+      thread.querySelector("#vote-count-left")?.textContent ||
+      "";
 
-    if (!name || !avatarUrl) {
-      continue;
+    if (!author || !avatarUrl) {
+      scanStats.missingMetadata += 1;
     }
 
     timestamps.forEach((timestamp, index) => {
-      const id = `${name}-${timestamp.time}-${index}`;
+      const id = `${sourceId}-${timestamp.time}-${index}`;
 
       if (
         timestamp.time !== null &&
@@ -387,30 +445,43 @@ function scanComments() {
           id,
           time: timestamp.time,
           timestamp: timestamp.value,
-          displayText: getTimestampSegment(rawText, timestamps, index),
+          displayText: core.getTimestampSegment(rawText, timestamps, index),
           text: rawText,
           name,
           avatar: avatarUrl,
+          likes: core.parseVoteCount(voteCount),
           processed: false,
         });
+        scanStats.accepted += 1;
       }
     });
   }
 
-  addComments(scannedComments);
+  if (scanStats.timestamped > 0 || scanStats.accepted > 0) {
+    console.info(
+      `CommentSync Title Row DOM scan: ${scanStats.accepted} accepted from ${scanStats.timestamped} timestamp(s), ${scanStats.chapterSkipped} chapter list(s), ${scanStats.missingMetadata} missing metadata, ${scanStats.threads} thread(s) scanned`,
+    );
+  }
+
+  return addComments(scannedComments, currentRunId);
 }
 
-async function fetchIncrementalComments(videoId) {
+async function fetchIncrementalComments(videoId, currentRunId, signal) {
   let nextToken = null;
   let pageCount = 0;
 
-  while (pageCount < 10) {
-    const { comments: fetchedComments, nextToken: fetchedNextToken } = await fetchCommentsPage(
+  while (pageCount < 10 && currentRunId === runId && !signal?.aborted) {
+    const { comments: fetchedComments, nextToken: fetchedNextToken } = await core.fetchCommentsPage(
       videoId,
       nextToken,
+      signal,
     );
 
-    addComments(fetchedComments);
+    if (currentRunId !== runId || signal?.aborted) {
+      return;
+    }
+
+    addComments(fetchedComments, currentRunId);
 
     if (!fetchedNextToken) {
       break;
@@ -421,193 +492,38 @@ async function fetchIncrementalComments(videoId) {
   }
 }
 
-function addComments(incomingComments) {
-  if (incomingComments.length === 0) {
-    return;
+function addComments(incomingComments, currentRunId = runId) {
+  if (currentRunId !== runId) {
+    return 0;
+  }
+
+  if (!Array.isArray(incomingComments) || incomingComments.length === 0) {
+    return 0;
   }
 
   const previousCount = comments.length;
+  let incompleteMetadataCount = 0;
+
   incomingComments.forEach((incomingComment) => {
     if (!comments.some((comment) => comment.id === incomingComment.id)) {
       comments.push(incomingComment);
+
+      if (incomingComment.metadataIncomplete) {
+        incompleteMetadataCount += 1;
+      }
     }
   });
 
   comments.sort((a, b) => a.time - b.time);
   console.info(
-    `CommentSync Title Row accepted ${comments.length - previousCount} new comment(s); ${comments.length} total`,
+    `CommentSync Title Row accepted ${comments.length - previousCount} new comment(s); ${comments.length} total; ${incompleteMetadataCount} with fallback metadata`,
   );
 
   if (!monitoringInitialized) {
-    startMonitoring();
-  }
-}
-
-async function fetchCommentsPage(videoId, continuation = null) {
-  let nextToken = continuation;
-
-  if (!nextToken) {
-    const videoResponse = await fetchVideo(videoId);
-    nextToken = commentsContinuationToken(videoResponse);
+    startMonitoring(currentRunId);
   }
 
-  if (!nextToken) {
-    return { comments: [], nextToken: null };
-  }
-
-  const commentsResponse = await fetchNext(nextToken);
-  const items = getContinuationItems(commentsResponse);
-  const fetchedComments = [];
-  let followingToken = null;
-
-  if (!items) {
-    return { comments: [], nextToken: null };
-  }
-
-  for (const item of items) {
-    if (item.commentThreadRenderer) {
-      fetchedComments.push(
-        ...extractThreadTimestampComments(item.commentThreadRenderer, commentsResponse),
-      );
-    } else if (item.continuationItemRenderer) {
-      followingToken =
-        item.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token || null;
-    }
-  }
-
-  return { comments: fetchedComments, nextToken: followingToken };
-}
-
-function getContinuationItems(response) {
-  return (
-    response.onResponseReceivedEndpoints?.[0]?.appendContinuationItemsAction?.continuationItems ||
-    response.onResponseReceivedEndpoints?.[1]?.reloadContinuationItemsCommand?.continuationItems ||
-    null
-  );
-}
-
-function extractThreadTimestampComments(thread, response) {
-  const comment = extractComment(thread, response);
-
-  if (!comment) {
-    return [];
-  }
-
-  const timestamps = findTimestampContexts(comment.text);
-
-  if (isChaptersComment(timestamps)) {
-    return [];
-  }
-
-  return timestamps.map((timestamp, index) => ({
-    id: `${comment.id}-${timestamp.time}-${index}`,
-    sourceCommentId: comment.id,
-    name: comment.name,
-    avatar: comment.avatar,
-    likes: comment.likes,
-    time: timestamp.time,
-    timestamp: timestamp.value,
-    displayText: getTimestampSegment(comment.text, timestamps, index),
-    text: comment.text,
-    processed: false,
-  }));
-}
-
-function extractComment(thread, response) {
-  if (thread.comment) {
-    const renderer = thread.comment.commentRenderer;
-    const text = renderer.contentText?.runs?.map((run) => run.text).join("") || "";
-
-    return {
-      id: renderer.commentId,
-      name: renderer.authorText?.simpleText || "",
-      avatar: renderer.authorThumbnail?.thumbnails?.[0]?.url || "",
-      likes: parseVoteCount(renderer.voteCount?.simpleText),
-      text,
-    };
-  }
-
-  if (thread.commentViewModel) {
-    const viewModel = thread.commentViewModel.commentViewModel;
-    const mutation = response.frameworkUpdates?.entityBatchUpdate?.mutations?.find(
-      (entry) => entry.entityKey === viewModel.commentKey,
-    );
-    const payload = mutation?.payload?.commentEntityPayload;
-
-    if (!payload) {
-      return null;
-    }
-
-    return {
-      id: payload.properties.commentId,
-      name: payload.author.displayName,
-      avatar: payload.author.avatarThumbnailUrl,
-      likes: parseVoteCount(payload.toolbar?.likeCountLiked),
-      text: payload.properties.content.content,
-    };
-  }
-
-  return null;
-}
-
-function commentsContinuationToken(response) {
-  const body = Array.isArray(response)
-    ? response.find((entry) => entry?.response)?.response
-    : response?.response;
-  const contents = body?.contents?.twoColumnWatchNextResults?.results?.results?.contents;
-
-  if (!Array.isArray(contents)) {
-    return null;
-  }
-
-  const commentSection = contents.find(
-    (entry) =>
-      entry.itemSectionRenderer &&
-      entry.itemSectionRenderer.sectionIdentifier === "comment-item-section",
-  );
-
-  return (
-    commentSection?.itemSectionRenderer?.contents?.[0]?.continuationItemRenderer
-      ?.continuationEndpoint?.continuationCommand?.token || null
-  );
-}
-
-async function fetchVideo(videoId) {
-  const response = await fetch(`https://www.youtube.com/watch?v=${videoId}&pbj=1`, {
-    credentials: "omit",
-    headers: {
-      "X-Youtube-Client-Name": "1",
-      "X-Youtube-Client-Version": INNERTUBE_CLIENT_VERSION,
-    },
-  });
-
-  return await response.json();
-}
-
-async function fetchNext(continuation) {
-  const body = JSON.stringify({
-    context: {
-      client: {
-        clientName: "WEB",
-        clientVersion: INNERTUBE_CLIENT_VERSION,
-      },
-    },
-    continuation,
-  });
-
-  const response = await fetch(
-    `https://www.youtube.com/youtubei/v1/next?key=${INNERTUBE_API_KEY}`,
-    {
-      method: "POST",
-      credentials: "omit",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body,
-    },
-  );
-
-  return await response.json();
+  return comments.length - previousCount;
 }
 
 function showOverlay(comment) {
@@ -625,8 +541,10 @@ function showOverlay(comment) {
     overlayElement.classList.remove("commentsync-visible");
     overlayElement.classList.add("commentsync-hiding");
     overlayElement.children[0].src = comment.avatar || "";
+    overlayElement.children[0].style.display = comment.avatar ? "" : "none";
 
-    const timestamp = comment.timestamp || findTimestampContexts(comment.text || "")[0]?.value;
+    const timestamp =
+      comment.timestamp || core.findTimestampContexts(comment.text || "")[0]?.value;
     if (!timestamp) {
       console.warn("CommentSync Title Row skipped a comment without a timestamp", comment);
       return false;
@@ -689,94 +607,18 @@ function hideOverlay() {
   overlayElement.classList.remove("commentsync-visible");
 }
 
-function getTimeInSeconds(value) {
-  const parts = value.split(":").reverse();
-  const seconds = Number.parseInt(parts[0], 10);
-  const minutes = Number.parseInt(parts[1], 10);
-  const hours = Number.parseInt(parts[2] || "0", 10);
-
-  if (Number.isNaN(seconds) || Number.isNaN(minutes) || Number.isNaN(hours)) {
-    return null;
-  }
-
-  if (seconds > 59 || (parts.length > 2 && minutes > 59)) {
-    return null;
-  }
-
-  return seconds + minutes * 60 + hours * 3600;
-}
-
-function findTimestampContexts(text) {
-  if (!text) {
-    return [];
-  }
-
-  const timestamps = [];
-  timestampRegex.lastIndex = 0;
-
-  let match;
-  while ((match = timestampRegex.exec(text))) {
-    const time = getTimeInSeconds(match[0]);
-
-    if (time !== null) {
-      timestamps.push({
-        value: match[0],
-        time,
-        from: match.index,
-        to: timestampRegex.lastIndex,
-      });
-    }
-  }
-
-  return timestamps;
-}
-
-function getTimestampSegment(text, timestamps, index) {
-  if (timestamps.length < 2) {
-    return text;
-  }
-
-  const current = timestamps[index];
-  const next = timestamps[index + 1];
-  const from = current.from;
-  const to = next ? next.from : text.length;
-
-  return text.slice(from, to).trim();
-}
-
-function isChaptersComment(timestamps) {
-  return timestamps.length >= 3 && timestamps[0].time === 0;
-}
-
-function parseVoteCount(value) {
-  if (!value) {
-    return 0;
-  }
-
-  const normalized = String(value).trim().toUpperCase();
-  const amount = Number.parseFloat(normalized.replace(/[^0-9.]/g, ""));
-
-  if (Number.isNaN(amount)) {
-    return 0;
-  }
-
-  if (normalized.includes("M")) {
-    return Math.round(amount * 1_000_000);
-  }
-
-  if (normalized.includes("K")) {
-    return Math.round(amount * 1_000);
-  }
-
-  return Math.round(amount);
-}
-
 async function isActiveFunc() {
-  const state = await browser.storage.sync.get("active");
+  const state = await getSyncStorage("active");
   return state?.active === undefined || state?.active === null || state.active;
 }
 
 function resetVariables() {
+  hideOverlay();
+  clearTimeout(monitorRetryTimer);
+  clearTimeout(queueRetryTimer);
+  clearTimeout(scanRetryTimer);
+  fallbackAbortController?.abort();
+  fallbackAbortController = null;
   monitoringInitialized = false;
   isDisplaying = false;
   comments = [];
@@ -793,20 +635,47 @@ window.addEventListener("pageshow", scheduleMain);
 window.addEventListener("popstate", scheduleMain);
 window.addEventListener("yt-navigate-finish", scheduleMain);
 window.addEventListener("yt-page-data-updated", scheduleMain);
-locationChange(scheduleMain);
+watchLocation(scheduleMain);
 scheduleMain();
 
-browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  sendResponse(true);
-
-  if (message.type === "isActive") {
-    hideOverlay();
-    comments.forEach((comment) => {
-      comment.processed = false;
-    });
-    commentsQueue = [];
-    isActive = message.status;
+function getSyncStorage(keys) {
+  if (usingBrowserPromiseApi) {
+    return extensionApi.storage.sync.get(keys);
   }
+
+  return new Promise((resolve, reject) => {
+    extensionApi.storage.sync.get(keys, (items) => {
+      const error = extensionApi.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve(items);
+    });
+  });
+}
+
+function sendRuntimeMessage(message) {
+  if (usingBrowserPromiseApi) {
+    return extensionApi.runtime.sendMessage(message);
+  }
+
+  return new Promise((resolve, reject) => {
+    extensionApi.runtime.sendMessage(message, (response) => {
+      const error = extensionApi.runtime.lastError;
+
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+
+      resolve(response);
+    });
+  });
+}
+
+extensionApi.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  sendResponse(true);
 
   if (message.type === "comments_update") {
     if (message.video_id && message.video_id !== activeVideoId) {
@@ -832,4 +701,29 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.error(`CommentSync Title Row comment fetch failed: ${message.message}`);
     runFallbackFetch(message.video_id || activeVideoId, runId);
   }
+});
+
+extensionApi.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "sync" || !changes.active) {
+    return;
+  }
+
+  const nextActiveState = changes.active.newValue;
+  if (typeof nextActiveState !== "boolean" || nextActiveState === isActive) {
+    return;
+  }
+
+  isActive = nextActiveState;
+  if (!isActive) {
+    runId += 1;
+    activeVideoId = null;
+    resetVariables();
+    removeInterface();
+    sendRuntimeMessage({ type: "cancel_comments" }).catch((error) => {
+      console.error("CommentSync Title Row failed to cancel background comments", error);
+    });
+    return;
+  }
+
+  scheduleMain();
 });
